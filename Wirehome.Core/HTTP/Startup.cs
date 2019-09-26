@@ -4,12 +4,12 @@ using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Logging;
-using Swashbuckle.AspNetCore.Swagger;
 using Swashbuckle.AspNetCore.SwaggerUI;
 using System;
 using System.IO;
 using System.Linq;
 using Microsoft.AspNetCore.Rewrite;
+using Microsoft.OpenApi.Models;
 using Wirehome.Core.Cloud;
 using Wirehome.Core.Components;
 using Wirehome.Core.Constants;
@@ -40,7 +40,7 @@ using Wirehome.Core.System.StartupScripts;
 
 namespace Wirehome.Core.HTTP
 {
-    public class WebStartup
+    public class Startup
     {
         // ReSharper disable once UnusedMember.Global
         public void ConfigureServices(IServiceCollection services)
@@ -54,7 +54,7 @@ namespace Wirehome.Core.HTTP
                 options.AddConsole();
             });
 
-            IMvcBuilder mvcBuilder = services.AddMvc(config => config.Filters.Add(new DefaultExceptionFilter()));
+            var mvcBuilder = services.AddMvc(config => config.Filters.Add(new DefaultExceptionFilter()));
             mvcBuilder.ConfigureApplicationPartManager(manager =>
             {
                 manager.FeatureProviders.Remove(manager.FeatureProviders.First(f => f.GetType() == typeof(ControllerFeatureProvider)));
@@ -64,21 +64,21 @@ namespace Wirehome.Core.HTTP
             services.AddSwaggerGen(c =>
             {
                 c.DescribeAllEnumsAsStrings();                
-                c.SwaggerDoc("v1", new Info
+                c.SwaggerDoc("v1", new OpenApiInfo
                 {
                     Title = "Wirehome.Core API",
                     Version = "v1",
                     Description = "The public API for the Wirehome.Core service.",
-                    License = new License
+                    License = new OpenApiLicense
                     {
                         Name = "Apache-2.0",
-                        Url = "https://github.com/chkr1011/Wirehome.Core/blob/master/LICENSE"
+                        Url = new Uri("https://github.com/chkr1011/Wirehome.Core/blob/master/LICENSE")
                     },
-                    Contact = new Contact
+                    Contact = new OpenApiContact
                     {
                         Name = "Wirehome.Core",
                         Email = string.Empty,
-                        Url = "https://github.com/chkr1011/Wirehome.Core"
+                        Url = new Uri("https://github.com/chkr1011/Wirehome.Core")
                     },
                 });
             });
@@ -92,6 +92,9 @@ namespace Wirehome.Core.HTTP
             {
                 services.AddSingleton(typeof(IPythonProxy), pythonProxy);
             }
+
+            services.AddCors();
+            services.AddResponseCompression();
         }
 
         // ReSharper disable once UnusedMember.Global
@@ -118,10 +121,13 @@ namespace Wirehome.Core.HTTP
                 app.UseDeveloperExceptionPage();
             }
 
+            app.UseResponseCompression();
+            app.UseCors(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
+
             ConfigureSwagger(app);
             ConfigureWebApps(app, globalVariablesService, packageManagerService);
             ConfigureMvc(app);
-
+            
             app.Run(httpServerService.HandleRequestAsync);
 
             StartServices(serviceProvider);

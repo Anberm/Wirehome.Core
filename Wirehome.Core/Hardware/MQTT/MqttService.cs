@@ -2,11 +2,14 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices.ComTypes;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using MQTTnet;
+using MQTTnet.Client.Receiving;
 using MQTTnet.Server;
+using MQTTnet.Server.Status;
 using Wirehome.Core.Contracts;
 using Wirehome.Core.Diagnostics;
 using Wirehome.Core.Storage;
@@ -28,6 +31,7 @@ namespace Wirehome.Core.Hardware.MQTT
         private readonly ILogger _logger;
 
         private IMqttServer _mqttServer;
+        private bool _enableMqttLogging;
 
         public MqttService(
             SystemCancellationToken systemCancellationToken,
@@ -48,6 +52,7 @@ namespace Wirehome.Core.Hardware.MQTT
             systemStatusService.Set("mqtt.incoming_messages_count", () => _incomingMessages.Count);
             systemStatusService.Set("mqtt.inbound_rate", () => _inboundCounter.Count);
             systemStatusService.Set("mqtt.outbound_rate", () => _outboundCounter.Count);
+            systemStatusService.Set("mqtt.connected_clients_count", () => _mqttServer.GetClientStatusAsync().GetAwaiter().GetResult().Count);
         }
 
         public void Start()
@@ -55,8 +60,18 @@ namespace Wirehome.Core.Hardware.MQTT
             _storageService.TryReadOrCreate(out MqttServiceOptions options, MqttServiceOptions.Filename);
 
             var mqttFactory = new MqttFactory();
-            _mqttServer = options.EnableLogging ? mqttFactory.CreateMqttServer(new LoggerAdapter(_logger)) : mqttFactory.CreateMqttServer();
-            _mqttServer.ApplicationMessageReceived += OnApplicationMessageReceived;
+
+            _enableMqttLogging = options.EnableLogging;
+            if (_enableMqttLogging)
+            {
+                _mqttServer = mqttFactory.CreateMqttServer(new LoggerAdapter(_logger));
+            }
+            else
+            {
+                _mqttServer = mqttFactory.CreateMqttServer();
+            }
+
+            _mqttServer.UseApplicationMessageReceivedHandler(new MqttApplicationMessageReceivedHandlerDelegate(e => OnApplicationMessageReceived(e)));
 
             var serverOptions = new MqttServerOptionsBuilder()
                 .WithDefaultEndpointPort(options.ServerPort)
@@ -74,6 +89,14 @@ namespace Wirehome.Core.Hardware.MQTT
             Task.Factory.StartNew(() => ProcessIncomingMqttMessages(_systemCancellationToken.Token), _systemCancellationToken.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
+        public List<string> GetTopicImportUids()
+        {
+            lock (_importers)
+            {
+                return _importers.Select(i => i.Key).ToList();
+            }
+        }
+
         public string StartTopicImport(string uid, MqttImportTopicParameters parameters)
         {
             if (parameters == null) throw new ArgumentNullException(nameof(parameters));
@@ -83,7 +106,7 @@ namespace Wirehome.Core.Hardware.MQTT
                 uid = Guid.NewGuid().ToString("D");
             }
 
-            var importer = new MqttTopicImporter(parameters, this, _logger);
+            var importer = new MqttTopicImporter(parameters, this, _enableMqttLogging,  _logger);
             importer.Start();
 
             lock (_importers)
@@ -124,14 +147,14 @@ namespace Wirehome.Core.Hardware.MQTT
             }
         }
 
-        public IList<MqttApplicationMessage> GetRetainedMessages()
+        public Task<IList<MqttApplicationMessage>> GetRetainedMessagesAsync()
         {
-            return _mqttServer.GetRetainedMessages();
+            return _mqttServer.GetRetainedApplicationMessagesAsync();
         }
 
-        public void DeleteRetainedMessages()
+        public Task DeleteRetainedMessagesAsync()
         {
-            _mqttServer.ClearRetainedMessagesAsync().GetAwaiter().GetResult();
+            return _mqttServer.ClearRetainedApplicationMessagesAsync();
         }
 
         public void Publish(MqttPublishParameters parameters)
@@ -164,6 +187,14 @@ namespace Wirehome.Core.Hardware.MQTT
                 _subscribers[uid] = new MqttSubscriber(uid, topicFilter, callback);
             }
 
+            // Enqueue all retained messages to match the expected MQTT behavior.
+            // Here we have no client per subscription. So we need to adopt some
+            // features here manually.
+            foreach (var retainedMessage in _mqttServer.GetRetainedApplicationMessagesAsync().GetAwaiter().GetResult())
+            {
+                _incomingMessages.Add(new MqttApplicationMessageReceivedEventArgs(null, retainedMessage));
+            }
+
             return uid;
         }
 
@@ -175,9 +206,14 @@ namespace Wirehome.Core.Hardware.MQTT
             }
         }
 
-        public IList<IMqttClientSessionStatus> GetClients()
+        public Task<IList<IMqttClientStatus>> GetClientsAsync()
         {
-            return _mqttServer.GetClientSessionsStatus();
+            return _mqttServer.GetClientStatusAsync();
+        }
+
+        public Task<IList<IMqttSessionStatus>> GetSessionsAsync()
+        {
+            return _mqttServer.GetSessionStatusAsync();
         }
 
         private void ProcessIncomingMqttMessages(CancellationToken cancellationToken)
@@ -239,7 +275,7 @@ namespace Wirehome.Core.Hardware.MQTT
             }
         }
 
-        private void OnApplicationMessageReceived(object sender, MqttApplicationMessageReceivedEventArgs eventArgs)
+        private void OnApplicationMessageReceived(MqttApplicationMessageReceivedEventArgs eventArgs)
         {
             _inboundCounter.Increment();
             _incomingMessages.Add(eventArgs);

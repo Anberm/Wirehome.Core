@@ -4,10 +4,11 @@ using System.Net;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.Extensions.DependencyInjection;
-using Swashbuckle.AspNetCore.Swagger;
+using Microsoft.OpenApi.Models;
 using Wirehome.Cloud.Controllers;
 using Wirehome.Cloud.Filters;
 using Wirehome.Cloud.Services.Authorization;
@@ -28,9 +29,9 @@ namespace Wirehome.Cloud
             services.AddSingleton<DeviceConnectorService>();
             services.AddSingleton<AuthorizationService>();
             services.AddSingleton<RepositoryService>();
-            
+
             services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
-            .AddCookie(o => 
+            .AddCookie(o =>
             {
                 o.LoginPath = "/cloud/account/login";
                 o.LogoutPath = "/cloud/account/logout";
@@ -58,10 +59,13 @@ namespace Wirehome.Cloud
             .ConfigureApplicationPartManager(config =>
             {
                 config.FeatureProviders.Remove(config.FeatureProviders.First(f => f.GetType() == typeof(ControllerFeatureProvider)));
-                config.FeatureProviders.Add(new WirehomeControllerFeatureProvider(typeof(CloudController).Namespace));
+                config.FeatureProviders.Add(new WirehomeControllerFeatureProvider(typeof(Wirehome.Cloud.Controllers.CloudController).Namespace));
             });
 
             ConfigureSwaggerServices(services);
+
+            services.AddCors();
+            services.AddResponseCompression();
         }
 
         // ReSharper disable once UnusedMember.Global
@@ -83,6 +87,8 @@ namespace Wirehome.Cloud
 
             app.UseAuthentication();
             app.UseStaticFiles();
+            app.UseCors(config => config.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
+            app.UseResponseCompression();
 
             ConfigureMvc(app);
             ConfigureSwagger(app);
@@ -163,21 +169,21 @@ namespace Wirehome.Cloud
             services.AddSwaggerGen(c =>
             {
                 c.DescribeAllEnumsAsStrings();
-                c.SwaggerDoc("v1", new Info
+                c.SwaggerDoc("v1", new OpenApiInfo
                 {
                     Title = "Wirehome.Cloud API",
                     Version = "v1",
                     Description = "This is the public API for the Wirehome.Cloud service.",
-                    License = new License
+                    License = new OpenApiLicense
                     {
                         Name = "Apache-2.0",
-                        Url = "https://github.com/chkr1011/Wirehome.Core/blob/master/LICENSE"
+                        Url = new Uri("https://github.com/chkr1011/Wirehome.Core/blob/master/LICENSE")
                     },
-                    Contact = new Contact
+                    Contact = new OpenApiContact
                     {
                         Name = "Wirehome.Core",
                         Email = string.Empty,
-                        Url = "https://github.com/chkr1011/Wirehome.Core"
+                        Url = new Uri("https://github.com/chkr1011/Wirehome.Core")
                     },
                 });
             });
